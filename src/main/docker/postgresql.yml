@@ -1,0 +1,11 @@
+version: '2'
+services:
+    jsample-postgresql:
+        image: postgres:10.4
+        # volumes:
+        #     - ~/volumes/jhipster/jsample/postgresql/:/var/lib/postgresql/data/
+        environment:
+            - POSTGRES_USER=jsample
+            - POSTGRES_PASSWORD=
+        ports:
+            - 5432:5432
