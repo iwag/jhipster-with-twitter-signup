@@ -1,7 +1,9 @@
 package io.github.iwag.web.rest;
 
+import io.github.iwag.service.UserService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.ui.Model;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -15,8 +17,13 @@ import twitter4j.conf.ConfigurationBuilder;
 
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
+import java.util.HashMap;
+import java.util.Map;
 
 public class TwitterController {
+
+    @Autowired
+    private UserService userService;
 
     private static final Logger LOGGER = LoggerFactory.getLogger(TwitterController.class);
 
@@ -98,6 +105,17 @@ public class TwitterController {
             //get the access token
             AccessToken token = twitter.getOAuthAccessToken(requestToken, oauthVerifier);
 
+
+            Map<String, Object> details = new HashMap<>();
+            twitter4j.User twitterUser = twitter.showUser(twitter.getId());
+
+            details.put("picture", twitterUser.getMiniProfileImageURL());
+            details.put("langKey", twitterUser.getLang());
+            details.put("preferred_username", twitterUser.getScreenName());
+            details.put("sub", twitter.getId());
+            details.put("email", twitterUser.getScreenName() + "@example.com");
+
+            userService.getUserFromAuthentication(details);
 
             //take the request token out of the session
             request.getSession().removeAttribute("requestToken");

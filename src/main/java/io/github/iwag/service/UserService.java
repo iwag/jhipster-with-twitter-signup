@@ -16,6 +16,11 @@ import org.slf4j.LoggerFactory;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.GrantedAuthority;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import io.github.iwag.web.rest.errors.InvalidPasswordException;
 import org.springframework.stereotype.Service;
@@ -26,6 +31,7 @@ import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.*;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 /**
  * Service class for managing users.
@@ -272,4 +278,122 @@ public class UserService {
     public List<String> getAuthorities() {
         return authorityRepository.findAll().stream().map(Authority::getName).collect(Collectors.toList());
     }
+
+    public UserDTO getUserFromAuthentication( Map<String, Object> details) {
+
+        User user = getUser(details);
+
+        List<String> authorities = Arrays.asList(AuthoritiesConstants.USER);
+        Set<Authority> userAuthorities = extractAuthorities(authorities);
+        user.setAuthorities(userAuthorities);
+        user.setPassword("NA");
+
+        // convert Authorities to GrantedAuthorities
+        Set<GrantedAuthority> grantedAuthorities = userAuthorities.stream()
+            .map(Authority::getName)
+            .map(SimpleGrantedAuthority::new)
+            .collect(Collectors.toSet());
+
+        UsernamePasswordAuthenticationToken authenticationToken = getToken(details, user, grantedAuthorities);
+        SecurityContextHolder.getContext().setAuthentication(authenticationToken);
+        return new UserDTO(syncUserWithIdP(details, user));
+    }
+
+    private static UsernamePasswordAuthenticationToken getToken(Map<String, Object> details, User user, Set<GrantedAuthority> grantedAuthorities) {
+        // create UserDetails so #{principal.username} works
+        UserDetails userDetails =
+            new org.springframework.security.core.userdetails.User(user.getLogin(),
+                "N/A", grantedAuthorities);
+        // update Spring Security Authorities to match groups claim from IdP
+        UsernamePasswordAuthenticationToken token = new UsernamePasswordAuthenticationToken(
+            userDetails, "N/A", grantedAuthorities);
+        token.setDetails(details);
+        return token;
+    }
+
+    public User syncUserWithIdP(Map<String, Object> details, User user) {
+        // save authorities in to sync user roles/groups between IdP and JHipster's local database
+        Collection<String> dbAuthorities = getAuthorities();
+        Collection<String> userAuthorities =
+            user.getAuthorities().stream().map(Authority::getName).collect(Collectors.toList());
+        for (String authority : userAuthorities) {
+            if (!dbAuthorities.contains(authority)) {
+                log.debug("Saving authority '{}' in local database", authority);
+                Authority authoritytoSave = new Authority();
+                authoritytoSave.setName(authority);
+                authorityRepository.save(authoritytoSave);
+            }
+        }
+        // save account in to sync users between IdP and JHipster's local database
+        Optional<User> existingUser = userRepository.findOneByLogin(user.getLogin());
+        if (existingUser.isPresent()) {
+            // if IdP sends last updated information, use it to determine if an update should happen
+            if (details.get("updated_at") != null) {
+                Instant dbModifiedDate = existingUser.get().getLastModifiedDate();
+                Instant idpModifiedDate = new Date(Long.valueOf((Integer) details.get("updated_at"))).toInstant();
+                if (idpModifiedDate.isAfter(dbModifiedDate)) {
+                    log.debug("Updating user '{}' in local database", user.getLogin());
+                    updateUser(user.getFirstName(), user.getLastName(), user.getEmail(),
+                        user.getLangKey(), user.getImageUrl());
+                }
+                // no last updated info, blindly update
+            } else {
+                log.debug("Updating user '{}' in local database", user.getLogin());
+                updateUser(user.getFirstName(), user.getLastName(), user.getEmail(),
+                    user.getLangKey(), user.getImageUrl());
+            }
+        } else {
+            log.debug("Saving user '{}' in local database", user.getLogin());
+            userRepository.save(user);
+            //this.clearUserCaches(user);
+        }
+        return user;
+    }
+
+    private static User getUser(Map<String, Object> details) {
+        if (details == null) return null;
+        User user = new User();
+        user.setId((Long) details.get("sub"));
+        user.setLogin((String) details.get("preferred_username"));
+        if (details.get("given_name") != null) {
+            user.setFirstName((String) details.get("given_name"));
+        }
+        if (details.get("family_name") != null) {
+            user.setLastName((String) details.get("family_name"));
+        }
+        if (details.get("email_verified") != null) {
+            user.setActivated((Boolean) details.get("email_verified"));
+        }
+        if (details.get("email") != null) {
+            user.setEmail((String) details.get("email"));
+        }
+        if (details.get("langKey") != null) {
+            user.setLangKey((String) details.get("langKey"));
+        } else if (details.get("locale") != null) {
+            String locale = (String) details.get("locale");
+            String langKey = locale.substring(0, locale.indexOf("-"));
+            user.setLangKey(langKey);
+        }
+        if (details.get("picture") != null) {
+            user.setImageUrl((String) details.get("picture"));
+        }
+        user.setActivated(true);
+        return user;
+    }
+
+    private static Set<Authority> extractAuthorities(List<String> values) {
+        return authoritiesFromStringStream(
+            values.stream().filter(role -> role.startsWith("ROLE_"))
+        );
+    }
+
+    private static Set<Authority> authoritiesFromStringStream(Stream<String> strings) {
+        return strings
+            .map(string -> {
+                Authority auth = new Authority();
+                auth.setName(string);
+                return auth;
+            }).collect(Collectors.toSet());
+    }
+
 }
